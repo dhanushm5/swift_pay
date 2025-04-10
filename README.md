@@ -77,14 +77,16 @@ The blockchain system consists of two main contracts:
    - For frontend, create a `.env.local` file in the layer2 directory:
      ```
      NEXT_PUBLIC_API_URL=http://localhost:8000
-     NEXTAUTH_SECRET=your_nextauth_secret
+     NEXTAUTH_SECRET=your_nextauth_secret_here_replace_with_strong_random_value
      NEXTAUTH_URL=http://localhost:3000
      ```
    - For backend, create a `.env` file in the layer3 directory:
      ```
-     CONTRACT_ADDRESS=
+     CONTRACT_ADDRESS=your_deployed_contract_address_will_go_here
      HARDHAT_URL=http://localhost:8545
      ```
+
+   > ⚠️ **Security Note**: Never commit these `.env` files to GitHub. They are automatically excluded by the `.gitignore` file.
 
 5. Start the Hardhat blockchain node:
    ```bash
