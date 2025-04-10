@@ -202,4 +202,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [FastAPI](https://fastapi.tiangolo.com/)
 - [Hardhat](https://hardhat.org/)
 - [shadcn/ui](https://ui.shadcn.com/)
-- All contributors and supporters of the project
+- Dhanush M
+- Rahul Bilyar
+- Priyanshu Kumar
