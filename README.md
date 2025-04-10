@@ -88,9 +88,10 @@ The blockchain system consists of two main contracts:
 
    > ⚠️ **Security Note**: Never commit these `.env` files to GitHub. They are automatically excluded by the `.gitignore` file.
 
-5. Start the Hardhat blockchain node:
+5. Compile and start the Hardhat blockchain node:
    ```bash
    cd ../layer3
+   npx hardhat compile
    npx hardhat node
    ```
 
