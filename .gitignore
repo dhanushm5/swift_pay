@@ -54,3 +54,29 @@ logs/
 # Misc
 .DS_Store
 Thumbs.db
+
+# Layer2 specific
+layer2/.next/
+layer2/node_modules/
+layer2/.vercel/
+layer2/coverage/
+layer2/.env
+layer2/.env.local
+layer2/.env.development.local
+layer2/.env.test.local
+layer2/.env.production.local
+layer2/node_modules/
+
+# Layer3 specific
+layer3/__pycache__/
+layer3/.venv/
+layer3/venv/
+layer3/dist/
+layer3/build/
+layer3/.pytest_cache/
+layer3/.env
+layer3/.env.local
+layer3/.env.development
+layer3/.env.test
+layer3/.env.production
+layer3/node_modules/
