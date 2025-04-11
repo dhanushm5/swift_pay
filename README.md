@@ -149,28 +149,69 @@ The Swift Pay application includes a facial recognition server that provides bio
 
 ### Setup and Installation
 
-1. Install dlib from source (if pip installation fails):
+#### Installing dlib from source
+
+dlib is a powerful machine learning and computer vision library used for face detection and landmark recognition. Sometimes pip installations fail due to compilation issues, so building from source is often more reliable:
+
+1. Clone the dlib repository (if not already included):
    ```bash
-   cd layer2/face_server/dlib
+   cd layer2/face_server
+   git clone https://github.com/davisking/dlib.git
+   ```
+
+2. Build and install dlib from source:
+   ```bash
+   cd dlib
+   mkdir build
+   cd build
+   cmake ..
+   cmake --build .
+   cd ..
    python setup.py install
    ```
 
-2. Download the facial landmarks model:
+3. Alternatively, if you've already built dlib and have a wheel file:
+   ```bash
+   cd layer2/face_server/dlib
+   pip install dist/dlib-19.24.99-cp39-cp39-macosx_15_0_universal2.whl  # Use your specific wheel filename
+   ```
+
+4. Verify the installation:
+   ```bash
+   python -c "import dlib; print(f'dlib version: {dlib.__version__}')"
+   ```
+
+#### Setting up the facial landmarks model
+
+The face recognition system requires the pre-trained shape predictor model for facial landmark detection:
+
+1. Download the landmark model file:
    ```bash
    cd layer2/face_server
    wget http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
+   ```
+
+2. Extract the model:
+   ```bash
    bunzip2 shape_predictor_68_face_landmarks.dat.bz2
    ```
 
-3. Install dependencies for the facial recognition server:
+3. Verify the file exists in the correct location:
+   ```bash
+   ls -la shape_predictor_68_face_landmarks.dat
+   ```
+   You should see a file of approximately 99MB in size.
+
+#### Installing other dependencies
+
+1. Install dependencies for the facial recognition server:
    ```bash
    cd layer2/face_server
    pip install -r requirements.txt
    ```
 
-4. Start the facial recognition server:
+2. Start the facial recognition server:
    ```bash
-   cd layer2/face_server
    python main.py
    ```
    The server will start and listen for facial recognition requests on port 8001.
