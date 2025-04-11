@@ -4,10 +4,11 @@ Swift Pay is a modern blockchain-based payment system that allows for secure, fa
 
 ## Project Structure
 
-The project consists of two main layers:
+The project consists of three main components:
 
 - **Layer 2 (Frontend)**: A Next.js application with React components for user interaction
 - **Layer 3 (Backend)**: Blockchain implementation with Solidity smart contracts and FastAPI services
+- **Facial Recognition Server**: A Python-based server that handles biometric authentication
 
 ### Smart Contract Structure
 
@@ -19,12 +20,15 @@ The blockchain system consists of two main contracts:
 ## Features
 
 - User authentication and management
+  - Traditional username/password login
+  - Facial recognition authentication for enhanced security
 - Balance management (add, deposit, check)
 - Send and receive payments
 - Transaction history tracking (by user, by transaction ID)
 - Blockchain-based security with Ethereum smart contracts
 - Responsive UI with shadcn components
 - RESTful API for interacting with the blockchain
+- Biometric verification for secure transactions
 
 ## Tech Stack
 
@@ -119,6 +123,53 @@ The blockchain system consists of two main contracts:
    npm run dev
    ```
    The frontend will be available at http://localhost:3000
+
+## Facial Recognition Server
+
+The Swift Pay application includes a facial recognition server that provides biometric authentication capabilities, enhancing the security of transactions and user authentication.
+
+### Features
+- Face detection and recognition for secure user authentication
+- API endpoints for registering and verifying users
+- Storage of facial data with proper security measures
+- Integration with the main application for seamless authentication flow
+
+### Setup and Installation
+
+1. Install dependencies for the facial recognition server:
+   ```bash
+   cd layer2/face_server
+   pip install -r requirements.txt
+   ```
+
+2. Start the facial recognition server:
+   ```bash
+   cd layer2/face_server
+   python main.py
+   ```
+   The server will start and listen for facial recognition requests.
+
+### API Endpoints
+
+The facial recognition server exposes the following endpoints:
+
+- `POST /register`: Register a new user's face
+- `POST /verify`: Verify a user's identity using facial recognition
+- `GET /health`: Check the health status of the facial recognition server
+
+### How It Works
+
+1. During user registration, the application captures the user's facial data through the webcam
+2. The facial data is processed and stored securely in the server's database
+3. For subsequent logins, the user can choose facial recognition as an authentication method
+4. The captured facial image is compared with the stored data to verify the user's identity
+5. Upon successful verification, the user is granted access to the application
+
+### Security Considerations
+
+- Facial data is stored securely and is never exposed directly to the frontend
+- The system implements rate limiting to prevent brute force attacks
+- All communication between the main application and the facial recognition server is encrypted
 
 ## API Documentation
 

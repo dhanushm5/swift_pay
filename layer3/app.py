@@ -2,8 +2,8 @@ import os
 import json
 import subprocess
 import logging
-from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Depends, Request
+from typing import Optional, List, Dict
+from fastapi import FastAPI, HTTPException, Depends, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -13,6 +13,12 @@ from web3.middleware import geth_poa_middleware
 import uvicorn
 import sys
 import traceback
+from passlib.context import CryptContext # Added for password hashing
+
+# --- Password Hashing Setup ---
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+CREDENTIALS_FILE = "user_credentials.json"
+# --- End Password Hashing Setup ---
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,7 +29,7 @@ load_dotenv()
 
 app = FastAPI(
     title="SwiftPay API",
-    description="API for interacting with SwiftPay blockchain transactions",
+    description="API for interacting with SwiftPay blockchain transactions and user authentication", # Updated description
     version="1.0.0",
 )
 
@@ -82,6 +88,32 @@ def load_contract_abi():
 
 CONTRACT_ABI = load_contract_abi()
 DEFAULT_CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
+
+# --- User Credential Store (Off-Chain) ---
+def load_user_credentials() -> Dict[str, Dict]:
+    """Load user credentials from the JSON file."""
+    if not os.path.exists(CREDENTIALS_FILE):
+        return {}
+    try:
+        with open(CREDENTIALS_FILE, "r") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        logger.error(f"Error decoding {CREDENTIALS_FILE}. Starting with empty credentials.")
+        return {}
+    except Exception as e:
+        logger.error(f"Error loading user credentials: {e}")
+        return {}
+
+def save_user_credentials(credentials: Dict[str, Dict]):
+    """Save user credentials to the JSON file."""
+    try:
+        with open(CREDENTIALS_FILE, "w") as f:
+            json.dump(credentials, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving user credentials: {e}")
+
+user_credentials_db = load_user_credentials()
+# --- End User Credential Store ---
 
 # Middleware to log requests and handle exceptions
 @app.middleware("http")
@@ -260,82 +292,144 @@ class TransactionLookup(BaseModel):
 class UserTransactionsLookup(BaseModel):
     username: str = Field(..., description="Username to look up transactions for")
 
-# User Management endpoints
-@app.post("/api/users/create")
-async def create_user(user: UserCreate, contract_address: Optional[str] = None):
-    """Create a new user with the given username."""
+# Add models for new auth endpoints
+class UserAuth(BaseModel):
+    username: str = Field(..., description="Username")
+    password: str = Field(..., description="Password")
+
+class UserRegister(UserAuth):
+    pass # Inherits username and password
+
+# --- New Authentication Endpoints ---
+
+@app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
+async def register_user(user_data: UserRegister):
+    """Register a new user with username and password."""
+    username = user_data.username
+    password = user_data.password
+    
+    logger.info(f"Attempting registration for username: {username}")
+    
+    # 1. Check if username already exists in off-chain store
+    if username in user_credentials_db:
+        logger.warning(f"Registration failed: Username '{username}' already exists.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already exists"
+        )
+        
+    # 2. Hash the password
+    hashed_password = pwd_context.hash(password)
+    
+    # 3. Create user on the blockchain
+    contract = get_contract()
+    if not contract:
+         logger.error("Registration failed: Blockchain contract not available.")
+         raise HTTPException(status_code=503, detail="Blockchain service unavailable.")
+         
     try:
-        logger.info(f"Creating user: {user.username}")
-        contract = get_contract(contract_address)
-        if not contract:
-            logger.error("No contract available for user creation")
-            return {"success": False, "error": "No contract available. Deploy a contract first or check if Hardhat is running."}
-            
-        # Check if user already exists
-        try:
-            logger.info(f"Checking if user '{user.username}' already exists")
-            exists = contract.functions.validateUserByName(user.username).call()
-            if exists:
-                logger.info(f"User '{user.username}' already exists")
-                return {"success": False, "error": "Username already exists"}
-        except Exception as e:
-            logger.warning(f"Error checking if user exists: {e}")
-            pass  # If error occurs, assume user doesn't exist and continue
-            
-        # Create user transaction
+        logger.info(f"Calling smart contract to create user '{username}' on blockchain.")
+        # Use the contract function that takes username
         tx = {
             'from': w3.eth.accounts[0],
             'to': contract.address,
-            'gas': 3000000,  # Add explicit gas limit
+            'gas': 3000000,
             'nonce': w3.eth.get_transaction_count(w3.eth.accounts[0]),
-            'data': contract.encodeABI(fn_name='createUserWithName', args=[user.username])
+            'data': contract.encodeABI(fn_name='createUserWithName', args=[username])
         }
-        
-        logger.info(f"Sending transaction to create user '{user.username}'")
-        # Send transaction using our helper
         tx_hash, receipt = send_transaction(tx)
-        logger.info(f"User creation transaction successful: {tx_hash.hex()}")
-            
-        # Get the assigned UUID to show to the user
-        user_id = contract.functions.getUserIdByName(user.username).call()
-        logger.info(f"User '{user.username}' created with ID {user_id}")
         
-        return {
-            "success": True,
-            "username": user.username,
-            "userId": user_id,
-            "txHash": tx_hash.hex()
-        }
+        # Retrieve the generated UUID from the contract
+        blockchain_uuid = contract.functions.getUserIdByName(username).call()
+        logger.info(f"User '{username}' created on blockchain with UUID: {blockchain_uuid}")
+        
     except Exception as e:
-        logger.error(f"Error creating user: {e}")
-        logger.error(traceback.format_exc())
-        return {"success": False, "error": f"Error creating user: {str(e)}"}
+        logger.error(f"Blockchain user creation failed for '{username}': {e}")
+        # Check if it failed because the username *already* existed on chain (maybe created outside this flow)
+        try:
+            exists_on_chain = contract.functions.validateUserByName(username).call()
+            if exists_on_chain:
+                 logger.warning(f"Username '{username}' already exists on blockchain, but not in local DB. Attempting to link.")
+                 blockchain_uuid = contract.functions.getUserIdByName(username).call()
+            else:
+                 raise HTTPException(status_code=500, detail=f"Failed to create user on blockchain: {str(e)}")
+        except Exception as inner_e:
+             logger.error(f"Failed to check/link existing blockchain user '{username}': {inner_e}")
+             raise HTTPException(status_code=500, detail=f"Failed to create or link user on blockchain: {str(inner_e)}")
 
-@app.post("/api/users/check")
-async def check_user(user: UserCheck, contract_address: Optional[str] = None):
-    """Check if a user exists by username."""
-    try:
-        logger.info(f"Checking if user exists: {user.username}")
-        contract = get_contract(contract_address)
-        if not contract:
-            logger.error("No contract available for user check")
-            return {"exists": False, "error": "No contract available. Deploy a contract first or check if Hardhat is running."}
-            
-        exists = contract.functions.validateUserByName(user.username).call()
-        logger.info(f"User '{user.username}' exists: {exists}")
+    # 4. Store user credentials (username, hashed_password, uuid) off-chain
+    user_credentials_db[username] = {
+        "hashed_password": hashed_password,
+        "blockchain_uuid": blockchain_uuid
+    }
+    save_user_credentials(user_credentials_db)
+    logger.info(f"User '{username}' successfully registered and stored locally.")
+    
+    return {"success": True, "username": username, "userId": blockchain_uuid}
+
+@app.post("/api/auth/login")
+async def login_user(user_data: UserAuth):
+    """Authenticate a user with username and password."""
+    username = user_data.username
+    password = user_data.password
+    
+    logger.info(f"Login attempt for username: {username}")
+    
+    # 1. Find user in the off-chain store
+    user_info = user_credentials_db.get(username)
+    if not user_info:
+        logger.warning(f"Login failed: Username '{username}' not found.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
         
-        result = {"exists": exists}
+    # 2. Verify the password
+    hashed_password = user_info.get("hashed_password")
+    if not hashed_password or not pwd_context.verify(password, hashed_password):
+        logger.warning(f"Login failed: Invalid password for username '{username}'.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
         
-        if exists:
-            user_id = contract.functions.getUserIdByName(user.username).call()
-            result["userId"] = user_id
-            logger.info(f"User '{user.username}' has ID: {user_id}")
+    # 3. Check if user still exists on blockchain (optional but good practice)
+    blockchain_uuid = user_info.get("blockchain_uuid")
+    if blockchain_uuid:
+        try:
+            contract = get_contract()
+            if contract and not contract.functions.validateUser(blockchain_uuid).call():
+                 logger.warning(f"Login failed: User '{username}' (UUID: {blockchain_uuid}) not found on blockchain anymore.")
+                 # Decide how to handle this - maybe re-create? For now, deny login.
+                 raise HTTPException(status_code=404, detail="User account not found on blockchain.")
+        except Exception as e:
+            logger.error(f"Error verifying user '{username}' on blockchain during login: {e}")
+            # Decide if login should proceed - maybe allow if blockchain is down? For now, deny.
+            raise HTTPException(status_code=503, detail="Could not verify user with blockchain.")
             
-        return result
-    except Exception as e:
-        logger.error(f"Error checking user: {e}")
-        logger.error(traceback.format_exc())
-        return {"exists": False, "error": f"Error checking user: {str(e)}"}
+    logger.info(f"User '{username}' successfully authenticated.")
+    
+    # Return user info needed for session (e.g., username and blockchain UUID)
+    return {
+        "success": True,
+        "username": username,
+        "userId": blockchain_uuid
+    }
+
+# --- End New Authentication Endpoints ---
+
+# --- Deprecated/Modified User Management Endpoints ---
+# Consider removing or modifying these old endpoints as they are insecure
+
+# @app.post("/api/users/create") - Now handled by /api/auth/register
+# async def create_user(user: UserCreate, contract_address: Optional[str] = None): ...
+
+# @app.post("/api/users/check") - Logic is now part of /api/auth/login & /api/auth/register
+# async def check_user(user: UserCheck, contract_address: Optional[str] = None): ...
+
+# --- End Deprecated/Modified User Management Endpoints ---
 
 # Balance Management endpoints
 @app.post("/api/balance/add")
@@ -799,4 +893,5 @@ async def startup_event():
 
 if __name__ == "__main__":
     # Run the server
+    logger.info(f"User credentials loaded from: {CREDENTIALS_FILE}")
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
