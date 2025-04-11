@@ -4,23 +4,41 @@ import base64
 import numpy as np
 import cv2
 import logging
+import time
+import pickle  # Added pickle import for face embeddings
 from io import BytesIO
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from PIL import Image
 from typing import Optional, Dict, List, Any
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from face_utils import FaceProcessor
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('face_server.log')
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Create app
 app = FastAPI(
-    title="Face Recognition API",
-    description="Simple API for facial recognition and payment authorization",
-    version="1.0.0",
+    title="Enhanced Face Recognition API",
+    description="Advanced facial recognition and liveness detection API",
+    version="2.0.0",
 )
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Add CORS middleware
 app.add_middleware(
@@ -35,35 +53,15 @@ app.add_middleware(
 STORAGE_DIR = os.path.abspath("face_data")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 DB_PATH = os.path.join(STORAGE_DIR, "face_db.json")
+EMBEDDINGS_DIR = os.path.join(STORAGE_DIR, "embeddings")
+os.makedirs(EMBEDDINGS_DIR, exist_ok=True)
 
-# Load OpenCV face detector
-try:
-    cascPath = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-    if not os.path.exists(cascPath):
-        logger.error(f"Cascade file not found at {cascPath}")
-        # Try to find it in a different location
-        alt_path = os.path.join(os.path.dirname(cv2.__file__), 'data', 'haarcascade_frontalface_default.xml')
-        if os.path.exists(alt_path):
-            cascPath = alt_path
-            logger.info(f"Found cascade file at alternative path: {alt_path}")
-        else:
-            logger.error("Could not find haarcascade_frontalface_default.xml file")
-    
-    face_cascade = cv2.CascadeClassifier(cascPath)
-    logger.info(f"Loaded face cascade classifier from {cascPath}")
-    
-    if face_cascade.empty():
-        logger.error("Failed to load face cascade classifier - the classifier is empty")
-except Exception as e:
-    logger.error(f"Error loading face cascade: {e}")
-    face_cascade = None
-
-# Check which OpenCV version is installed
-logger.info(f"OpenCV version: {cv2.__version__}")
+# Initialize face processor
+face_processor = FaceProcessor()
 
 class FaceDB:
     def __init__(self):
-        self.users = {}  # username -> face image filename mapping
+        self.users = {}  # username -> face data mapping
         self.load_database()
 
     def load_database(self):
@@ -76,55 +74,58 @@ class FaceDB:
             except Exception as e:
                 logger.error(f"Error loading face database: {e}")
         else:
-            logger.info(f"No face database found at {DB_PATH}, creating new database")
-            # Create empty file
+            logger.info("Creating new face database")
             self.save_database()
 
     def save_database(self):
         """Save face database to storage"""
         try:
             with open(DB_PATH, "w") as f:
-                json.dump(self.users, f)
-            logger.info(f"Saved face database with {len(self.users)} users to {DB_PATH}")
+                json.dump(self.users, f, indent=4)
+            logger.info(f"Saved face database with {len(self.users)} users")
         except Exception as e:
             logger.error(f"Error saving face database: {e}")
 
-    def add_user(self, username: str, face_image: np.ndarray):
-        """Add or update a user's face image"""
+    def add_user(self, username: str, face_image: np.ndarray) -> bool:
+        """Add or update a user's face data"""
         try:
-            # Save the face image to disk
-            user_face_path = os.path.join(STORAGE_DIR, f"{username}.jpg")
-            logger.info(f"Saving face image for user '{username}' to {user_face_path}")
+            # Process face image
+            processed_face, is_live = face_processor.detect_face(face_image)
             
-            if face_image is None or face_image.size == 0:
-                logger.error(f"Invalid face image for user '{username}': Image is empty")
-                raise ValueError("Invalid face image: Image is empty")
+            if processed_face is None or not is_live:
+                logger.error(f"Failed to process face for user '{username}'")
+                return False
                 
-            # Ensure the image is in RGB format
-            if len(face_image.shape) < 3:
-                logger.warning(f"Converting grayscale face image to RGB for user '{username}'")
-                face_image = cv2.cvtColor(face_image, cv2.COLOR_GRAY2BGR)
-                
-            success = cv2.imwrite(user_face_path, face_image)
+            # Generate face embedding
+            embedding = face_processor.get_face_embedding(processed_face)
             
-            if not success:
-                logger.error(f"Failed to save face image for user '{username}'")
-                raise IOError(f"Failed to save face image to {user_face_path}")
+            if embedding is None:
+                logger.error(f"Failed to generate face embedding for user '{username}'")
+                return False
                 
-            # Verify the file was created
-            if not os.path.exists(user_face_path):
-                logger.error(f"Face image file for user '{username}' not found after saving")
-                raise IOError(f"Face image file not found after saving: {user_face_path}")
-                
-            logger.info(f"Successfully saved face image for user '{username}'")
+            # Save processed face image
+            face_path = os.path.join(STORAGE_DIR, f"{username}.jpg")
+            cv2.imwrite(face_path, cv2.cvtColor(processed_face, cv2.COLOR_RGB2BGR))
             
-            # Store the path in the database
-            self.users[username] = user_face_path
+            # Save face embedding
+            embedding_path = os.path.join(EMBEDDINGS_DIR, f"{username}.pkl")
+            with open(embedding_path, 'wb') as f:
+                pickle.dump(embedding, f)
+            
+            # Update database
+            self.users[username] = {
+                "face_path": face_path,
+                "embedding_path": embedding_path,
+                "registered_at": str(time.time())
+            }
             self.save_database()
-            return user_face_path
+            
+            logger.info(f"Successfully registered face for user '{username}'")
+            return True
+            
         except Exception as e:
             logger.error(f"Error adding user '{username}' to face database: {e}")
-            raise
+            return False
 
     def verify_face(self, face_image: np.ndarray, username: str) -> bool:
         """Verify if a face matches the stored face for a username"""
@@ -132,44 +133,35 @@ class FaceDB:
             if username not in self.users:
                 logger.warning(f"User '{username}' not found in face database")
                 return False
+                
+            # Process the input face
+            processed_face, is_live = face_processor.detect_face(face_image)
             
-            # Load the stored face image
-            stored_image_path = self.users[username]
-            if not os.path.exists(stored_image_path):
-                logger.error(f"Stored face image for user '{username}' not found at {stored_image_path}")
-                return False
-            
-            logger.info(f"Loading stored face image for user '{username}' from {stored_image_path}")
-            stored_face = cv2.imread(stored_image_path)
-            
-            if stored_face is None:
-                logger.error(f"Failed to load stored face image for user '{username}'")
+            if processed_face is None or not is_live:
+                logger.error(f"Failed to process face for verification")
                 return False
                 
-            # Convert to grayscale for better comparison
-            stored_face_gray = cv2.cvtColor(stored_face, cv2.COLOR_BGR2GRAY)
+            # Generate embedding for input face
+            input_embedding = face_processor.get_face_embedding(processed_face)
             
-            # Convert input face to grayscale for comparison
-            if len(face_image.shape) > 2:
-                face_image_gray = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
-            else:
-                face_image_gray = face_image
+            if input_embedding is None:
+                logger.error("Failed to generate face embedding for input face")
+                return False
                 
-            # Resize for comparison (both images must be the same size)
-            face_image_gray = cv2.resize(face_image_gray, (stored_face_gray.shape[1], stored_face_gray.shape[0]))
+            # Load stored embedding
+            with open(self.users[username]["embedding_path"], 'rb') as f:
+                stored_embedding = pickle.load(f)
             
-            # Use template matching for basic comparison
-            # (You might want to use a more sophisticated method in a production environment)
-            score = cv2.matchTemplate(face_image_gray, stored_face_gray, cv2.TM_CCOEFF_NORMED)[0][0]
-            logger.info(f"Face match score for '{username}': {score:.4f}")
+            # Compare embeddings
+            similarity = face_processor.compare_faces(input_embedding, stored_embedding)
             
-            # Lower threshold to increase match probability
-            threshold = 0.75 # Adjust based on testing
-            result = score > threshold
-            logger.info(f"Face verification result for '{username}': {result} (threshold: {threshold})")
+            # Define threshold for face matching
+            SIMILARITY_THRESHOLD = 0.85
+            result = similarity > SIMILARITY_THRESHOLD
             
-            # Convert numpy.bool_ to Python bool to avoid serialization issues
-            return bool(result)
+            logger.info(f"Face verification for '{username}': similarity={similarity:.4f}, result={result}")
+            return result
+            
         except Exception as e:
             logger.error(f"Error verifying face for user '{username}': {e}")
             return False
@@ -177,78 +169,6 @@ class FaceDB:
 # Initialize face database
 face_db = FaceDB()
 
-def detect_face(image_data: bytes) -> np.ndarray:
-    """Detect a face in an image and return the face region"""
-    try:
-        if face_cascade is None or face_cascade.empty():
-            logger.error("Face cascade classifier not properly loaded")
-            raise HTTPException(status_code=500, detail="Face detection system not properly initialized")
-        
-        # Convert bytes to numpy array
-        nparr = np.frombuffer(image_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if img is None:
-            logger.error("Failed to decode image")
-            raise HTTPException(status_code=400, detail="Invalid image format")
-            
-        logger.info(f"Processing image with shape: {img.shape}")
-        
-        # Convert to grayscale for face detection
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Use multiple scale factors for better detection
-        faces = face_cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(30, 30),
-            flags=cv2.CASCADE_SCALE_IMAGE
-        )
-        
-        if len(faces) == 0:
-            # Try again with more lenient parameters
-            logger.warning("No faces detected with default parameters, trying with more lenient parameters")
-            faces = face_cascade.detectMultiScale(
-                gray,
-                scaleFactor=1.05,
-                minNeighbors=3,
-                minSize=(20, 20),
-                flags=cv2.CASCADE_SCALE_IMAGE
-            )
-            
-        if len(faces) == 0:
-            logger.error("No face detected in the image")
-            # Return the whole image as a fallback
-            logger.warning("Using the whole image as fallback")
-            face_img = img
-            return face_img
-            # Uncomment below if you want to enforce face detection
-            # raise HTTPException(status_code=400, detail="No face detected in the image")
-        
-        # Get the largest face in the image
-        largest_face = max(faces, key=lambda rect: rect[2] * rect[3])
-        x, y, w, h = largest_face
-        
-        logger.info(f"Detected face at: x={x}, y={y}, width={w}, height={h}")
-        
-        # Add a bit of margin
-        margin = int(0.2 * w)  # 20% margin
-        x = max(0, x - margin)
-        y = max(0, y - margin)
-        w = min(img.shape[1] - x, w + 2 * margin)
-        h = min(img.shape[0] - y, h + 2 * margin)
-        
-        # Extract face region
-        face_img = img[y:y+h, x:x+w]
-        logger.info(f"Extracted face with shape: {face_img.shape}")
-        
-        return face_img
-    except Exception as e:
-        logger.error(f"Error detecting face: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
-
-# Middleware for request logging
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     try:
@@ -260,110 +180,147 @@ async def log_requests(request: Request, call_next):
         return JSONResponse(status_code=500, content={"detail": str(e)})
 
 @app.get("/")
-async def root():
+@limiter.limit("10/minute")
+async def root(request: Request):
     """Health check endpoint"""
-    return {"status": "Face recognition API is running", "storagePath": STORAGE_DIR}
+    return {
+        "status": "Enhanced Face Recognition API is running",
+        "version": "2.0.0",
+        "storagePath": STORAGE_DIR
+    }
 
 @app.post("/register")
-async def register_face(username: str = Form(...), file: UploadFile = File(...)):
+@limiter.limit("3/minute")
+async def register_face(
+    request: Request,
+    username: str = Form(...),
+    file: UploadFile = File(...)
+):
     """Register a new user with their face"""
     try:
         logger.info(f"Registering face for user: {username}")
-        logger.info(f"Received file: {file.filename}, content_type: {file.content_type}")
         
+        # Read and validate image
         image_data = await file.read()
-        logger.info(f"Read {len(image_data)} bytes from uploaded file")
+        nparr = np.frombuffer(image_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        face_img = detect_face(image_data)
+        if image is None:
+            raise HTTPException(status_code=400, detail="Invalid image format")
         
-        if face_img is None:
-            logger.error(f"Failed to detect face for user '{username}'")
-            return {"success": False, "message": "Failed to detect face in image"}
+        # Process face without registering to check if it would pass
+        processed_face, is_live = face_processor.detect_face(image)
         
-        # Add to database
-        image_path = face_db.add_user(username, face_img)
+        if processed_face is None:
+            return {
+                "success": False,
+                "message": "Could not detect a face in the image. Please ensure your face is clearly visible.",
+                "error_code": "NO_FACE_DETECTED"
+            }
+            
+        if not is_live:
+            return {
+                "success": False,
+                "message": "Liveness check failed. Please ensure good lighting, look directly at the camera, and try again.",
+                "error_code": "LIVENESS_CHECK_FAILED",
+                "advice": "Make sure you have good lighting, are looking directly at the camera, and your whole face is visible."
+            }
+            
+        # If we get here, face detection and liveness check passed, now register
+        success = face_db.add_user(username, image)
         
+        if not success:
+            return {
+                "success": False,
+                "message": "Face detected but registration failed. Please try again."
+            }
+            
         return {
-            "success": True, 
-            "message": f"Face registered for user {username}",
-            "imagePath": image_path
+            "success": True,
+            "message": f"Face registered successfully for user {username}"
         }
+        
     except Exception as e:
-        logger.error(f"Error registering face for user '{username}': {e}")
-        return {"success": False, "message": str(e)}
+        logger.error(f"Error registering face: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/verify")
-async def verify_face(username: str = Form(...), file: UploadFile = File(...)):
-    """Verify a user's face matches their stored face"""
+@limiter.limit("10/minute")
+async def verify_face(
+    request: Request,
+    username: str = Form(...),
+    file: UploadFile = File(...)
+):
+    """Verify a user's face"""
     try:
         logger.info(f"Verifying face for user: {username}")
-        logger.info(f"Received file: {file.filename}, content_type: {file.content_type}")
         
+        # Read and validate image
         image_data = await file.read()
-        logger.info(f"Read {len(image_data)} bytes from uploaded file")
+        nparr = np.frombuffer(image_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        face_img = detect_face(image_data)
-        
-        if face_img is None:
-            logger.error(f"Failed to detect face for user '{username}'")
-            return {"success": False, "verified": False, "message": "Failed to detect face in image"}
-        
-        # Verify against stored face
-        verified = face_db.verify_face(face_img, username)
+        if image is None:
+            raise HTTPException(status_code=400, detail="Invalid image format")
+            
+        # Verify face
+        verified = face_db.verify_face(image, username)
         
         return {
             "success": True,
             "verified": verified,
             "message": "Face verification successful" if verified else "Face verification failed"
         }
+        
     except Exception as e:
-        logger.error(f"Error verifying face for user '{username}': {e}")
-        return {"success": False, "verified": False, "message": str(e)}
+        logger.error(f"Error verifying face: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/authorize-payment")
-async def authorize_payment(username: str = Form(...), file: UploadFile = File(...)):
+@limiter.limit("5/minute")
+async def authorize_payment(
+    request: Request,
+    username: str = Form(...),
+    file: UploadFile = File(...)
+):
     """Authorize a payment using facial recognition"""
     try:
         logger.info(f"Authorizing payment for user: {username}")
-        logger.info(f"Received file: {file.filename}, content_type: {file.content_type}")
         
+        # Read and validate image
         image_data = await file.read()
-        logger.info(f"Read {len(image_data)} bytes from uploaded file")
+        nparr = np.frombuffer(image_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        face_img = detect_face(image_data)
-        
-        if face_img is None:
-            logger.error(f"Failed to detect face for payment authorization for user '{username}'")
-            return {
-                "success": False, 
-                "authorized": False,
-                "message": "Failed to detect face in image"
-            }
-        
-        # Verify against stored face
-        authorized = face_db.verify_face(face_img, username)
+        if image is None:
+            raise HTTPException(status_code=400, detail="Invalid image format")
+            
+        # Verify face with stricter checks for payment
+        verified = face_db.verify_face(image, username)
         
         return {
             "success": True,
-            "authorized": authorized,
-            "message": "Payment authorized via facial recognition" if authorized else "Face verification failed"
+            "authorized": verified,
+            "message": "Payment authorized via facial recognition" if verified else "Face verification failed"
         }
+        
     except Exception as e:
-        logger.error(f"Error authorizing payment via face recognition for user '{username}': {e}")
-        return {"success": False, "authorized": False, "message": str(e)}
-
-@app.get("/users")
-async def list_users():
-    """List all users in the face database"""
-    try:
-        return {"users": list(face_db.users.keys()), "count": len(face_db.users)}
-    except Exception as e:
-        logger.error(f"Error listing users: {e}")
-        return {"success": False, "message": str(e)}
+        logger.error(f"Error authorizing payment: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info(f"Starting Face Recognition API on port 8001...")
-    logger.info(f"Face database path: {DB_PATH}")
+    import time
+    
+    logger.info("Starting Enhanced Face Recognition API...")
     logger.info(f"Storage directory: {STORAGE_DIR}")
-    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)
+    logger.info(f"Database path: {DB_PATH}")
+    logger.info(f"Embeddings directory: {EMBEDDINGS_DIR}")
+    
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8001,
+        reload=True,
+        log_level="info"
+    )

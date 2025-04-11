@@ -46,6 +46,14 @@ The blockchain system consists of two main contracts:
 - Hardhat for Ethereum development
 - Ethers.js for contract interaction
 
+### Facial Recognition (Face Server)
+- dlib for face detection and landmarks
+- FaceNet (InceptionResnetV1) for face embeddings
+- MTCNN for face detection
+- OpenCV for image processing
+- FastAPI for REST endpoints
+- Pickle for storing face embeddings
+
 ## Getting Started
 
 ### Prerequisites
@@ -54,6 +62,8 @@ The blockchain system consists of two main contracts:
 - Python 3.8+ or higher
 - Git
 - Hardhat development environment
+- C++ compiler (for dlib)
+- CMake (for building dlib)
 
 ### Installation
 
@@ -130,24 +140,40 @@ The Swift Pay application includes a facial recognition server that provides bio
 
 ### Features
 - Face detection and recognition for secure user authentication
+- Advanced liveness detection to prevent spoofing attacks
+- Facial landmark detection using dlib's 68-point model
+- Pickle-based storage for face embeddings
 - API endpoints for registering and verifying users
 - Storage of facial data with proper security measures
 - Integration with the main application for seamless authentication flow
 
 ### Setup and Installation
 
-1. Install dependencies for the facial recognition server:
+1. Install dlib from source (if pip installation fails):
+   ```bash
+   cd layer2/face_server/dlib
+   python setup.py install
+   ```
+
+2. Download the facial landmarks model:
+   ```bash
+   cd layer2/face_server
+   wget http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
+   bunzip2 shape_predictor_68_face_landmarks.dat.bz2
+   ```
+
+3. Install dependencies for the facial recognition server:
    ```bash
    cd layer2/face_server
    pip install -r requirements.txt
    ```
 
-2. Start the facial recognition server:
+4. Start the facial recognition server:
    ```bash
    cd layer2/face_server
    python main.py
    ```
-   The server will start and listen for facial recognition requests.
+   The server will start and listen for facial recognition requests on port 8001.
 
 ### API Endpoints
 
@@ -155,21 +181,28 @@ The facial recognition server exposes the following endpoints:
 
 - `POST /register`: Register a new user's face
 - `POST /verify`: Verify a user's identity using facial recognition
-- `GET /health`: Check the health status of the facial recognition server
+- `POST /authorize-payment`: Authorize a payment using facial recognition
+- `GET /`: Check the health status of the facial recognition server
 
 ### How It Works
 
 1. During user registration, the application captures the user's facial data through the webcam
-2. The facial data is processed and stored securely in the server's database
-3. For subsequent logins, the user can choose facial recognition as an authentication method
-4. The captured facial image is compared with the stored data to verify the user's identity
-5. Upon successful verification, the user is granted access to the application
+2. The facial data is processed through our liveness detection system to prevent spoofing
+3. Face embeddings are generated using FaceNet and stored as pickle files
+4. For subsequent logins or payments, the user can authenticate using facial recognition
+5. The system compares new face captures with stored embeddings to verify identity
+6. Multiple security checks ensure robust protection against spoofing attempts:
+   - Texture analysis using Local Binary Patterns
+   - Eye aspect ratio detection for blink analysis
+   - Head pose estimation
+   - Image artifact detection
 
 ### Security Considerations
 
 - Facial data is stored securely and is never exposed directly to the frontend
 - The system implements rate limiting to prevent brute force attacks
 - All communication between the main application and the facial recognition server is encrypted
+- Adaptive liveness detection allows for user-friendly yet secure authentication
 
 ## API Documentation
 
