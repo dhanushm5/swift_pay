@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { useSession } from "next-auth/react";
+import { FaceAuthDialog } from "@/components/face-auth-dialog";
 
 interface SendMoneyDialogProps {
   onSuccess?: () => void;
@@ -23,11 +24,16 @@ export function SendMoneyDialog({ onSuccess }: SendMoneyDialogProps) {
   const [receiver, setReceiver] = useState("");
   const [amount, setAmount] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [showFaceAuth, setShowFaceAuth] = useState(false);
   const { data: session } = useSession();
   const { toast } = useToast();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setShowFaceAuth(true);
+  };
+
+  const handlePayment = async () => {
     setIsLoading(true);
 
     try {
@@ -61,6 +67,7 @@ export function SendMoneyDialog({ onSuccess }: SendMoneyDialogProps) {
       });
     } finally {
       setIsLoading(false);
+      setShowFaceAuth(false);
     }
   };
 
@@ -94,9 +101,17 @@ export function SendMoneyDialog({ onSuccess }: SendMoneyDialogProps) {
               required
             />
           </div>
-          <Button type="submit" className="w-full" disabled={isLoading}>
-            {isLoading ? "Sending..." : "Send"}
-          </Button>
+          {showFaceAuth ? (
+            <FaceAuthDialog
+              mode="payment"
+              onSuccess={handlePayment}
+              buttonText={isLoading ? "Processing..." : "Confirm with Face"}
+            />
+          ) : (
+            <Button type="submit" className="w-full" disabled={isLoading}>
+              {isLoading ? "Processing..." : "Continue"}
+            </Button>
+          )}
         </form>
       </DialogContent>
     </Dialog>

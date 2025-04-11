@@ -1,15 +1,22 @@
 import os
 import json
 import subprocess
+import logging
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from web3 import Web3
 from web3.middleware import geth_poa_middleware
 import uvicorn
 import sys
+import traceback
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -23,95 +30,169 @@ app = FastAPI(
 # Add CORS middleware to allow cross-origin requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allow all origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
 )
 
 # Default hardhat node URL
 HARDHAT_URL = os.getenv("HARDHAT_URL", "http://localhost:8545")
 
-# Connect to Hardhat node
-w3 = Web3(Web3.HTTPProvider(HARDHAT_URL))
-w3.middleware_onion.inject(geth_poa_middleware, layer=0)  # For compatibility with Hardhat
+# Global variable for blockchain connection
+w3 = None
+connected = False
+
+# Initialize Web3 connection
+def init_web3():
+    global w3, connected
+    try:
+        w3 = Web3(Web3.HTTPProvider(HARDHAT_URL))
+        w3.middleware_onion.inject(geth_poa_middleware, layer=0)  # For compatibility with Hardhat
+        connected = w3.is_connected()
+        if connected:
+            logger.info(f"Connected to blockchain at {HARDHAT_URL}")
+            return True
+        else:
+            logger.warning(f"Failed to connect to blockchain at {HARDHAT_URL}")
+            return False
+    except Exception as e:
+        logger.error(f"Error initializing Web3: {e}")
+        connected = False
+        return False
+
+# Try to connect on startup
+init_web3()
 
 # Load contract ABI from artifacts
 def load_contract_abi():
     try:
         abi_file_path = "./artifacts/contracts/TransactionBlock.sol/TransactionChain.json"
+        if not os.path.exists(abi_file_path):
+            logger.error(f"ABI file not found at {abi_file_path}")
+            return None
+            
         with open(abi_file_path, "r") as f:
             contract_json = json.load(f)
+            logger.info("Contract ABI loaded successfully")
             return contract_json["abi"]
     except Exception as e:
-        print(f"Error loading contract ABI: {e}")
+        logger.error(f"Error loading contract ABI: {e}")
         return None
 
 CONTRACT_ABI = load_contract_abi()
 DEFAULT_CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
+
+# Middleware to log requests and handle exceptions
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    try:
+        logger.info(f"Request path: {request.url.path}")
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        logger.error(f"Unhandled exception: {e}")
+        logger.error(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal server error: {str(e)}"}
+        )
 
 # Connection status
 @app.get("/api/status")
 def get_status():
     """Check connection status to the blockchain."""
     try:
-        connected = w3.is_connected()
+        # Try to reconnect if not connected
+        global connected
+        if not connected:
+            init_web3()
+            
+        if not w3 or not connected:
+            return {
+                "connected": False,
+                "message": "Not connected to blockchain. Is Hardhat running?",
+                "contractAddress": DEFAULT_CONTRACT_ADDRESS,
+                "contractLoaded": CONTRACT_ABI is not None
+            }
+        
         chain_id = w3.eth.chain_id
         accounts = w3.eth.accounts
         
         return {
-            "connected": connected,
+            "connected": True,
             "chainId": chain_id,
             "network": "hardhat" if chain_id == 31337 else "unknown",
             "accounts": accounts[:5] if len(accounts) > 5 else accounts,  # Only show first 5 accounts
-            "contractAddress": DEFAULT_CONTRACT_ADDRESS
+            "contractAddress": DEFAULT_CONTRACT_ADDRESS,
+            "contractLoaded": CONTRACT_ABI is not None
         }
     except Exception as e:
+        logger.error(f"Error in get_status: {e}")
         raise HTTPException(status_code=500, detail=f"Error connecting to blockchain: {str(e)}")
 
 # Contract instance getter
 def get_contract(contract_address: Optional[str] = None):
     """Get contract instance using the specified address or default."""
+    global connected
+    
+    # If not connected, try to reconnect
+    if not connected:
+        init_web3()
+    
     address = contract_address or DEFAULT_CONTRACT_ADDRESS
     
     if not address:
+        logger.warning("No contract address provided or found in environment")
         return None  # Return None to indicate no contract available
         
-    if not w3.is_connected():
-        raise HTTPException(status_code=503, detail="Not connected to blockchain node")
+    if not w3 or not connected:
+        logger.error("Cannot get contract: not connected to blockchain")
+        raise HTTPException(status_code=503, detail="Not connected to blockchain node. Is Hardhat running?")
         
     try:
         if not CONTRACT_ABI:
-            raise HTTPException(status_code=500, detail="Contract ABI not available")
+            logger.error("Cannot get contract: ABI not available")
+            raise HTTPException(status_code=500, detail="Contract ABI not available. Is the contract compiled?")
             
         contract = w3.eth.contract(address=address, abi=CONTRACT_ABI)
         return contract
     except Exception as e:
+        logger.error(f"Error getting contract: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting contract: {str(e)}")
 
 # Helper function for sending transactions in development mode
 def send_transaction(transaction):
     """Send a transaction using the first account from Hardhat's provided accounts"""
-    if not w3.eth.accounts:
-        raise HTTPException(status_code=500, detail="No accounts available")
+    if not w3 or not w3.eth.accounts:
+        raise HTTPException(status_code=500, detail="No accounts available. Is Hardhat running?")
     
-    # In development mode with Hardhat, we can send directly from the unlocked account
-    tx_hash = w3.eth.send_transaction(transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    
-    if receipt.status == 0:  # Transaction failed
-        raise HTTPException(status_code=400, detail="Transaction failed")
+    try:
+        # In development mode with Hardhat, we can send directly from the unlocked account
+        tx_hash = w3.eth.send_transaction(transaction)
+        logger.info(f"Transaction sent: {tx_hash.hex()}")
         
-    return tx_hash, receipt
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        logger.info(f"Transaction mined: {tx_hash.hex()}, status: {receipt.status}")
+        
+        if receipt.status == 0:  # Transaction failed
+            raise HTTPException(status_code=400, detail="Transaction failed on blockchain")
+            
+        return tx_hash, receipt
+    except Exception as e:
+        logger.error(f"Error sending transaction: {e}")
+        raise HTTPException(status_code=500, detail=f"Error sending transaction: {str(e)}")
 
 # Deploy new contract
 @app.post("/api/contract/deploy")
 async def deploy_contract():
     """Deploy a new TransactionChain contract."""
     try:
-        if not w3.is_connected():
-            raise HTTPException(status_code=503, detail="Not connected to blockchain node")
+        if not w3 or not connected:
+            if not init_web3():
+                raise HTTPException(status_code=503, detail="Not connected to blockchain node. Is Hardhat running?")
             
+        logger.info("Running contract deployment script...")
         result = subprocess.run(
             "npx hardhat run scripts/deploy.ts --network localhost",
             shell=True,
@@ -121,6 +202,7 @@ async def deploy_contract():
         )
         
         if result.returncode != 0:
+            logger.error(f"Deployment failed: {result.stderr}")
             raise HTTPException(status_code=500, detail=f"Deployment failed: {result.stderr}")
             
         # Extract contract address from the output
@@ -129,9 +211,11 @@ async def deploy_contract():
         match = re.search(r"TransactionChain deployed to: (0x[a-fA-F0-9]{40})", output)
         
         if not match:
+            logger.error("Could not extract contract address from deployment output")
             raise HTTPException(status_code=500, detail="Could not extract contract address from deployment output")
             
         contract_address = match.group(1)
+        logger.info(f"Contract deployed at: {contract_address}")
         
         # Save to .env file
         with open(".env", "w") as f:
@@ -144,6 +228,7 @@ async def deploy_contract():
         
         return {"success": True, "contractAddress": contract_address, "output": output}
     except Exception as e:
+        logger.error(f"Error deploying contract: {e}")
         raise HTTPException(status_code=500, detail=f"Error deploying contract: {str(e)}")
 
 # Pydantic models for request validation
@@ -179,32 +264,41 @@ class UserTransactionsLookup(BaseModel):
 @app.post("/api/users/create")
 async def create_user(user: UserCreate, contract_address: Optional[str] = None):
     """Create a new user with the given username."""
-    contract = get_contract(contract_address)
-    if not contract:
-        raise HTTPException(status_code=404, detail="No contract available. Deploy a contract first.")
-        
     try:
+        logger.info(f"Creating user: {user.username}")
+        contract = get_contract(contract_address)
+        if not contract:
+            logger.error("No contract available for user creation")
+            return {"success": False, "error": "No contract available. Deploy a contract first or check if Hardhat is running."}
+            
         # Check if user already exists
         try:
+            logger.info(f"Checking if user '{user.username}' already exists")
             exists = contract.functions.validateUserByName(user.username).call()
             if exists:
+                logger.info(f"User '{user.username}' already exists")
                 return {"success": False, "error": "Username already exists"}
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Error checking if user exists: {e}")
             pass  # If error occurs, assume user doesn't exist and continue
             
         # Create user transaction
         tx = {
             'from': w3.eth.accounts[0],
             'to': contract.address,
+            'gas': 3000000,  # Add explicit gas limit
             'nonce': w3.eth.get_transaction_count(w3.eth.accounts[0]),
             'data': contract.encodeABI(fn_name='createUserWithName', args=[user.username])
         }
         
+        logger.info(f"Sending transaction to create user '{user.username}'")
         # Send transaction using our helper
         tx_hash, receipt = send_transaction(tx)
+        logger.info(f"User creation transaction successful: {tx_hash.hex()}")
             
         # Get the assigned UUID to show to the user
         user_id = contract.functions.getUserIdByName(user.username).call()
+        logger.info(f"User '{user.username}' created with ID {user_id}")
         
         return {
             "success": True,
@@ -213,27 +307,35 @@ async def create_user(user: UserCreate, contract_address: Optional[str] = None):
             "txHash": tx_hash.hex()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
+        logger.error(f"Error creating user: {e}")
+        logger.error(traceback.format_exc())
+        return {"success": False, "error": f"Error creating user: {str(e)}"}
 
 @app.post("/api/users/check")
 async def check_user(user: UserCheck, contract_address: Optional[str] = None):
     """Check if a user exists by username."""
-    contract = get_contract(contract_address)
-    if not contract:
-        raise HTTPException(status_code=404, detail="No contract available. Deploy a contract first.")
-        
     try:
+        logger.info(f"Checking if user exists: {user.username}")
+        contract = get_contract(contract_address)
+        if not contract:
+            logger.error("No contract available for user check")
+            return {"exists": False, "error": "No contract available. Deploy a contract first or check if Hardhat is running."}
+            
         exists = contract.functions.validateUserByName(user.username).call()
+        logger.info(f"User '{user.username}' exists: {exists}")
         
         result = {"exists": exists}
         
         if exists:
             user_id = contract.functions.getUserIdByName(user.username).call()
             result["userId"] = user_id
+            logger.info(f"User '{user.username}' has ID: {user_id}")
             
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error checking user: {str(e)}")
+        logger.error(f"Error checking user: {e}")
+        logger.error(traceback.format_exc())
+        return {"exists": False, "error": f"Error checking user: {str(e)}"}
 
 # Balance Management endpoints
 @app.post("/api/balance/add")
@@ -316,16 +418,24 @@ async def deposit_eth(deposit: EthDeposit, contract_address: Optional[str] = Non
 @app.post("/api/balance/check")
 async def check_balance(balance_check: BalanceCheck, contract_address: Optional[str] = None):
     """Check a user's balance."""
-    contract = get_contract(contract_address)
-    if not contract:
-        raise HTTPException(status_code=404, detail="No contract available. Deploy a contract first.")
-        
     try:
+        logger.info(f"Checking balance for user: {balance_check.username}")
+        contract = get_contract(contract_address)
+        if not contract:
+            logger.error("No contract available for balance check")
+            return {"error": "No contract available. Deploy a contract first or check if Hardhat is running."}
+            
         # Get user ID from username
-        user_id = contract.functions.getUserIdByName(balance_check.username).call()
+        try:
+            user_id = contract.functions.getUserIdByName(balance_check.username).call()
+            logger.info(f"Found user ID {user_id} for '{balance_check.username}'")
+        except Exception as e:
+            logger.error(f"Error getting user ID: {e}")
+            return {"error": f"User '{balance_check.username}' not found"}
         
         # Get balance
         balance = contract.functions.balances(user_id).call()
+        logger.info(f"Balance for '{balance_check.username}' (ID {user_id}): {balance}")
         
         return {
             "username": balance_check.username,
@@ -333,7 +443,9 @@ async def check_balance(balance_check: BalanceCheck, contract_address: Optional[
             "balance": balance
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error checking balance: {str(e)}")
+        logger.error(f"Error checking balance: {e}")
+        logger.error(traceback.format_exc())
+        return {"error": f"Error checking balance: {str(e)}"}
 
 # Transaction Management endpoints
 @app.post("/api/transactions/create")
@@ -490,18 +602,26 @@ async def get_transaction_by_id(lookup: TransactionLookup, contract_address: Opt
 @app.post("/api/transactions/by-user")
 async def get_transactions_by_user(lookup: UserTransactionsLookup, contract_address: Optional[str] = None):
     """Get all transactions for a user."""
-    contract = get_contract(contract_address)
-    if not contract:
-        raise HTTPException(status_code=404, detail="No contract available. Deploy a contract first.")
-        
     try:
+        logger.info(f"Getting transactions for user: {lookup.username}")
+        contract = get_contract(contract_address)
+        if not contract:
+            logger.error("No contract available for transaction lookup")
+            return {"error": "No contract available. Deploy a contract first or check if Hardhat is running."}
+            
         # Get user ID from username
-        user_id = contract.functions.getUserIdByName(lookup.username).call()
+        try:
+            user_id = contract.functions.getUserIdByName(lookup.username).call()
+            logger.info(f"Found user ID {user_id} for '{lookup.username}'")
+        except Exception as e:
+            logger.error(f"Error getting user ID: {e}")
+            return {"error": f"User '{lookup.username}' not found"}
         
         # Check if user exists
         user_exists = contract.functions.validateUser(user_id).call()
         if not user_exists:
-            raise HTTPException(status_code=404, detail=f"User {lookup.username} does not exist")
+            logger.error(f"User {lookup.username} does not exist")
+            return {"error": f"User '{lookup.username}' does not exist"}
             
         # Get user transactions
         tx_result = contract.functions.getUserTransactions(user_id).call()
@@ -511,13 +631,16 @@ async def get_transactions_by_user(lookup: UserTransactionsLookup, contract_addr
         
         for i in range(len(tx_ids)):
             # Try to get usernames
-            sender_name = senders[i]
-            receiver_name = receivers[i]
+            sender_name = str(senders[i])
+            receiver_name = str(receivers[i])
             
             try:
-                sender_name = contract.functions.getUserNameById(senders[i]).call()
-                receiver_name = contract.functions.getUserNameById(receivers[i]).call()
-            except:
+                if senders[i] > 0:
+                    sender_name = contract.functions.getUserNameById(senders[i]).call()
+                if receivers[i] > 0:
+                    receiver_name = contract.functions.getUserNameById(receivers[i]).call()
+            except Exception as e:
+                logger.warning(f"Error getting username for transaction {tx_ids[i]}: {e}")
                 pass  # If username lookup fails, we'll use the IDs
                 
             transactions.append({
@@ -533,6 +656,7 @@ async def get_transactions_by_user(lookup: UserTransactionsLookup, contract_addr
                 "amount": amounts[i]
             })
             
+        logger.info(f"Found {len(transactions)} transactions for user '{lookup.username}'")
         return {
             "username": lookup.username,
             "userId": user_id,
@@ -540,7 +664,9 @@ async def get_transactions_by_user(lookup: UserTransactionsLookup, contract_addr
             "count": len(transactions)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching user transactions: {str(e)}")
+        logger.error(f"Error fetching user transactions: {e}")
+        logger.error(traceback.format_exc())
+        return {"error": f"Error fetching user transactions: {str(e)}"}
 
 @app.post("/api/transactions/received")
 async def get_received_transactions(lookup: UserTransactionsLookup, contract_address: Optional[str] = None):
@@ -640,9 +766,37 @@ async def get_sent_transactions(lookup: UserTransactionsLookup, contract_address
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching sent transactions: {str(e)}")
 
-if __name__ == "__main__":
-    # Check if hardhat is running
-    # subprocess.run(["python", "debug_hardhat.py"], check=False)
+# Add a startup event to check blockchain connection
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting SwiftPay API...")
     
+    # Check if contract ABI is loaded
+    if CONTRACT_ABI:
+        logger.info("Contract ABI loaded successfully")
+    else:
+        logger.warning("Contract ABI not loaded. Contract functionality will be unavailable")
+        
+    # Check contract address
+    if DEFAULT_CONTRACT_ADDRESS:
+        logger.info(f"Contract address set to: {DEFAULT_CONTRACT_ADDRESS}")
+    else:
+        logger.warning("Contract address not set. Deploy a contract first")
+
+    # Check blockchain connection
+    if init_web3():
+        logger.info(f"Connected to blockchain at {HARDHAT_URL}")
+        
+        # Check if we can get accounts
+        try:
+            accounts = w3.eth.accounts
+            logger.info(f"Found {len(accounts)} accounts")
+        except Exception as e:
+            logger.error(f"Error getting accounts: {e}")
+    else:
+        logger.warning(f"Failed to connect to blockchain at {HARDHAT_URL}")
+        logger.warning("Is Hardhat running? Run 'npx hardhat node' to start it")
+
+if __name__ == "__main__":
     # Run the server
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

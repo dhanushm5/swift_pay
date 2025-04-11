@@ -66,6 +66,8 @@ layer2/.env.development.local
 layer2/.env.test.local
 layer2/.env.production.local
 layer2/node_modules/
+layer2/face_server/.venv/
+layer2/face_server/face_data/
 
 # Layer3 specific
 layer3/__pycache__/
