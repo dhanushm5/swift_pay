@@ -13,10 +13,7 @@ const nextConfig = {
     return config;
   },
   experimental: {
-    // Increase chunk loading timeout to 60 seconds
-    incrementalCacheHandlerPath: false,
-    isrMemoryCacheSize: 0,
-    timeoutAttempts: 3
+    // Add any currently supported experimental features here if needed
   },
 };
 

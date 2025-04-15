@@ -324,8 +324,12 @@ class FaceProcessor:
     def compare_faces(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
         """Compare two face embeddings and return similarity score"""
         try:
+            # Ensure embeddings are flattened 1D arrays
+            emb1_flat = embedding1.flatten()
+            emb2_flat = embedding2.flatten()
+            
             # Calculate cosine similarity
-            similarity = np.dot(embedding1, embedding2) / (np.linalg.norm(embedding1) * np.linalg.norm(embedding2))
+            similarity = np.dot(emb1_flat, emb2_flat) / (np.linalg.norm(emb1_flat) * np.linalg.norm(emb2_flat))
             return float(similarity)
 
         except Exception as e:
