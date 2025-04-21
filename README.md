@@ -22,13 +22,14 @@ The blockchain system consists of two main contracts:
 - User authentication and management
   - Traditional username/password login
   - Facial recognition authentication for enhanced security
+  - NFC card authentication as an alternative verification method
 - Balance management (add, deposit, check)
 - Send and receive payments
 - Transaction history tracking (by user, by transaction ID)
 - Blockchain-based security with Ethereum smart contracts
 - Responsive UI with shadcn components
 - RESTful API for interacting with the blockchain
-- Biometric verification for secure transactions
+- Multi-factor authentication options (biometric and NFC)
 
 ## Tech Stack
 
@@ -244,6 +245,67 @@ The facial recognition server exposes the following endpoints:
 - The system implements rate limiting to prevent brute force attacks
 - All communication between the main application and the facial recognition server is encrypted
 - Adaptive liveness detection allows for user-friendly yet secure authentication
+
+## NFC Card Authentication Server
+
+Swift Pay now offers NFC card authentication as an alternative to facial recognition, providing users with flexible authentication options to suit their preferences.
+
+### Features
+- NFC card registration and verification for secure user authentication
+- Simple API for registering cards with user accounts
+- Fast verification mechanism for login and payment authorization
+- Secure storage of card identifiers with timestamps
+- Integration with the main application for seamless authentication
+- Alternative to facial recognition for users who prefer physical authentication methods
+
+### Setup and Installation
+
+1. The NFC card server is already included in the face_server directory and doesn't require additional setup:
+   ```bash
+   cd layer2/face_server
+   ```
+
+2. Start the NFC card authentication server:
+   ```bash
+   python nfc_server.py
+   ```
+   The server will start and listen for NFC card authentication requests on port 8002.
+
+### API Endpoints
+
+The NFC card authentication server exposes the following endpoints:
+
+- `POST /register`: Register a new NFC card for a user
+- `POST /verify`: Verify a user's identity using an NFC card
+- `POST /authorize-payment`: Authorize a payment using NFC card verification
+
+### How It Works
+
+1. During user registration, the application captures the user's NFC card identifier
+2. The NFC card data is stored securely with a timestamp
+3. For subsequent logins or payments, the user can authenticate using their NFC card
+4. The system compares the provided card identifier with the stored data to verify identity
+5. Authentication is fast and requires physical possession of the card, adding an extra layer of security
+
+### Security Considerations
+
+- Card identifiers are stored securely and never exposed directly to the frontend
+- Physical possession of the NFC card acts as an additional security factor
+- All communication between the main application and the NFC authentication server is encrypted
+- The system provides a fallback authentication method if facial recognition is unavailable or not preferred
+
+### Using Multiple Authentication Methods
+
+Swift Pay supports multiple authentication methods that can be used individually or together:
+
+1. **Single-Factor Authentication**: Basic username and password
+2. **Two-Factor Authentication Options**:
+   - Username/password + Facial recognition
+   - Username/password + NFC card
+3. **Multi-Factor Authentication**:
+   - Username/password + Facial recognition + NFC card for maximum security
+
+Users can choose their preferred authentication method during registration and can update their preferences at any time through the user settings.
 
 ## API Documentation
 

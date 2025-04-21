@@ -12,26 +12,43 @@ import {
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { FaceAuthDialog } from "@/components/face-auth-dialog";
+import { NFCAuthDialog } from "@/components/nfc-auth-dialog";
 import { useState } from "react";
 
 export function UserNav() {
   const { data: session } = useSession();
   const [isDropdownOpen, setDropdownOpen] = useState(false);
-  const [showRegisterModal, setShowRegisterModal] = useState(false);
-  const [showVerifyModal, setShowVerifyModal] = useState(false);
+  const [showRegisterFaceModal, setShowRegisterFaceModal] = useState(false);
+  const [showVerifyFaceModal, setShowVerifyFaceModal] = useState(false);
+  const [showRegisterNFCModal, setShowRegisterNFCModal] = useState(false);
+  const [showVerifyNFCModal, setShowVerifyNFCModal] = useState(false);
 
-  const handleRegister = (e: React.MouseEvent) => {
+  const handleRegisterFace = (e: React.MouseEvent) => {
     e.preventDefault();
-    e.stopPropagation(); // Prevent the dropdown from closing
-    setDropdownOpen(false); // Close dropdown manually
-    setShowRegisterModal(true); // Open registration modal
+    e.stopPropagation();
+    setDropdownOpen(false);
+    setShowRegisterFaceModal(true);
   };
   
-  const handleVerify = (e: React.MouseEvent) => {
+  const handleVerifyFace = (e: React.MouseEvent) => {
     e.preventDefault();
-    e.stopPropagation(); // Prevent the dropdown from closing
-    setDropdownOpen(false); // Close dropdown manually
-    setShowVerifyModal(true); // Open verify modal
+    e.stopPropagation();
+    setDropdownOpen(false);
+    setShowVerifyFaceModal(true);
+  };
+
+  const handleRegisterNFC = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDropdownOpen(false);
+    setShowRegisterNFCModal(true);
+  };
+  
+  const handleVerifyNFC = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDropdownOpen(false);
+    setShowVerifyNFCModal(true);
   };
 
   return (
@@ -59,7 +76,7 @@ export function UserNav() {
             <Button 
               variant="outline" 
               className="w-full" 
-              onClick={handleRegister}
+              onClick={handleRegisterFace}
             >
               Register Face ID
             </Button>
@@ -68,9 +85,27 @@ export function UserNav() {
             <Button 
               variant="outline" 
               className="w-full" 
-              onClick={handleVerify}
+              onClick={handleVerifyFace}
             >
               Verify Face ID
+            </Button>
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+            <Button 
+              variant="outline" 
+              className="w-full" 
+              onClick={handleRegisterNFC}
+            >
+              Register NFC Card
+            </Button>
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+            <Button 
+              variant="outline" 
+              className="w-full" 
+              onClick={handleVerifyNFC}
+            >
+              Verify NFC Card
             </Button>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -83,21 +118,21 @@ export function UserNav() {
         </DropdownMenuContent>
       </DropdownMenu>
       
-      {/* Face authentication modals outside the dropdown */}
-      {showRegisterModal && (
+      {/* Authentication modals */}
+      {showRegisterFaceModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg max-w-md w-full mx-4">
             <div className="p-4">
               <FaceAuthDialog 
                 mode="register" 
-                onSuccess={() => setShowRegisterModal(false)} 
+                onSuccess={() => setShowRegisterFaceModal(false)} 
               />
             </div>
             <div className="p-4 border-t">
               <Button 
                 variant="outline" 
                 className="w-full" 
-                onClick={() => setShowRegisterModal(false)}
+                onClick={() => setShowRegisterFaceModal(false)}
               >
                 Cancel
               </Button>
@@ -106,20 +141,64 @@ export function UserNav() {
         </div>
       )}
       
-      {showVerifyModal && (
+      {showVerifyFaceModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg max-w-md w-full mx-4">
             <div className="p-4">
               <FaceAuthDialog 
                 mode="verify" 
-                onSuccess={() => setShowVerifyModal(false)} 
+                onSuccess={() => setShowVerifyFaceModal(false)} 
               />
             </div>
             <div className="p-4 border-t">
               <Button 
                 variant="outline" 
                 className="w-full" 
-                onClick={() => setShowVerifyModal(false)}
+                onClick={() => setShowVerifyFaceModal(false)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRegisterNFCModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg max-w-md w-full mx-4">
+            <div className="p-4">
+              <NFCAuthDialog 
+                mode="register" 
+                onSuccess={() => setShowRegisterNFCModal(false)} 
+              />
+            </div>
+            <div className="p-4 border-t">
+              <Button 
+                variant="outline" 
+                className="w-full" 
+                onClick={() => setShowRegisterNFCModal(false)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {showVerifyNFCModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg max-w-md w-full mx-4">
+            <div className="p-4">
+              <NFCAuthDialog 
+                mode="verify" 
+                onSuccess={() => setShowVerifyNFCModal(false)} 
+              />
+            </div>
+            <div className="p-4 border-t">
+              <Button 
+                variant="outline" 
+                className="w-full" 
+                onClick={() => setShowVerifyNFCModal(false)}
               >
                 Cancel
               </Button>
